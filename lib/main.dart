@@ -1,14 +1,18 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:flutter/services.dart';
+import 'package:camera/camera.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
-  runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final cameras = await availableCameras(); // Get available cameras
+  runApp(MyApp(cameras: cameras));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final List<CameraDescription> cameras;
+
+  const MyApp({super.key, required this.cameras});
 
   @override
   Widget build(BuildContext context) {
@@ -17,79 +21,73 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(),
+      home: MyHomePage(cameras: cameras),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key});
+  final List<CameraDescription> cameras;
+
+  const MyHomePage({super.key, required this.cameras});
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateMixin {
+class _MyHomePageState extends State<MyHomePage> {
   File? _frontImage;
   File? _backImage;
-  bool _isFront = true;
-
-  final ImagePicker _picker = ImagePicker();
-  late AnimationController _controller;
-  late Animation<double> _animation;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _animation = Tween<double>(begin: 0, end: 1).animate(_controller);
+    _loadSavedImages();
   }
 
-  Future<void> _takePhoto(bool isFront) async {
-    // Lock orientation to landscape
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeRight,
-      DeviceOrientation.landscapeLeft,
-    ]);
+  Future<void> _loadSavedImages() async {
+    final prefs = await SharedPreferences.getInstance();
 
-    final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
-    if (photo != null) {
+    // Load front image
+    final frontImagePath = prefs.getString('frontImagePath');
+    if (frontImagePath != null && File(frontImagePath).existsSync()) {
       setState(() {
-        if (isFront) {
-          _frontImage = File(photo.path);
-        } else {
-          _backImage = File(photo.path);
-        }
+        _frontImage = File(frontImagePath);
       });
     }
 
-    // Restore orientation to allow both portrait and landscape
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeRight,
-      DeviceOrientation.landscapeLeft,
-    ]);
+    // Load back image
+    final backImagePath = prefs.getString('backImagePath');
+    if (backImagePath != null && File(backImagePath).existsSync()) {
+      setState(() {
+        _backImage = File(backImagePath);
+      });
+    }
   }
 
-  void _flipCard() {
-    setState(() {
-      _isFront = !_isFront;
-      if (_isFront) {
-        _controller.reverse();
-      } else {
-        _controller.forward();
-      }
-    });
-  }
+  Future<void> _takePhoto(bool isFront) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CameraScreen(
+          cameras: widget.cameras,
+          isFront: isFront,
+        ),
+      ),
+    );
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+    if (result != null && result is File) {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        if (isFront) {
+          _frontImage = result;
+          prefs.setString('frontImagePath', _frontImage!.path);
+        } else {
+          _backImage = result;
+          prefs.setString('backImagePath', _backImage!.path);
+        }
+      });
+    }
   }
 
   @override
@@ -98,43 +96,27 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
       appBar: AppBar(
         title: const Text('Ajokortti Appi'),
       ),
-      body: Center(
-        child: GestureDetector(
-          onTap: _flipCard,
-          child: AnimatedBuilder(
-            animation: _animation,
-            builder: (context, child) {
-              final angle = _animation.value * 3.14159; // Rotate 180 degrees
-              return Transform(
-                alignment: Alignment.center,
-                transform: Matrix4.identity()
-                  ..setEntry(3, 2, 0.001) // Perspective
-                  ..rotateY(angle),
-                child: angle <= 1.57
-                    ? _buildCard(_frontImage, 'Etupuoli')
-                    : Transform(
-                        alignment: Alignment.center,
-                        transform: Matrix4.identity()..rotateY(3.14159),
-                        child: _buildCard(_backImage, 'Takapuoli'),
-                      ),
-              );
-            },
-          ),
-        ),
+      body: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _buildCard(_frontImage, 'Front Side'),
+          const SizedBox(height: 20),
+          _buildCard(_backImage, 'Back Side'),
+        ],
       ),
       floatingActionButton: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
             onPressed: () => _takePhoto(true),
-            tooltip: 'Ota kuva etupuolesta',
-            child: const Icon(Icons.camera_front),
+            tooltip: 'Add Front Photo',
+            child: const Icon(Icons.camera_alt),
           ),
           const SizedBox(height: 10),
           FloatingActionButton(
             onPressed: () => _takePhoto(false),
-            tooltip: 'Ota kuva takapuolesta',
-            child: const Icon(Icons.camera_rear),
+            tooltip: 'Add Back Photo',
+            child: const Icon(Icons.camera_alt_outlined),
           ),
         ],
       ),
@@ -142,9 +124,18 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
   }
 
   Widget _buildCard(File? image, String placeholderText) {
+    // Define the aspect ratio for a driving license (3:2)
+    final double aspectRatio = 3 / 2;
+
+    // Calculate the width and height based on the screen size and aspect ratio
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final double cardWidth = screenWidth * 0.98; // 98% of the screen width
+    final double cardHeight = cardWidth / aspectRatio; // Maintain 3:2 aspect ratio
+
     return Container(
-      width: 300,
-      height: 200,
+      margin: const EdgeInsets.symmetric(horizontal: 0.01), // 1% padding on left and right
+      width: cardWidth,
+      height: cardHeight,
       decoration: BoxDecoration(
         border: Border.all(color: Colors.grey),
         color: Colors.white,
@@ -156,11 +147,90 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
             )
           : Center(
               child: Text(
-                'Korttia ei ole skannattu sovellukseen\n($placeholderText)',
+                'No image available\n($placeholderText)',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.grey),
               ),
             ),
+    );
+  }
+}
+
+class CameraScreen extends StatefulWidget {
+  final List<CameraDescription> cameras;
+  final bool isFront;
+
+  const CameraScreen({super.key, required this.cameras, required this.isFront});
+
+  @override
+  State<CameraScreen> createState() => _CameraScreenState();
+}
+
+class _CameraScreenState extends State<CameraScreen> {
+  late CameraController _controller;
+  late Future<void> _initializeControllerFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = CameraController(
+      widget.cameras.first,
+      ResolutionPreset.high,
+    );
+    _initializeControllerFuture = _controller.initialize();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _capturePhoto() async {
+    try {
+      await _initializeControllerFuture;
+      final image = await _controller.takePicture();
+      Navigator.pop(context, File(image.path));
+    } catch (e) {
+      print('Error capturing photo: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double aspectRatio = 3 / 2; // Aspect ratio for the card
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.isFront ? 'Capture Front Side' : 'Capture Back Side'),
+      ),
+      body: FutureBuilder<void>(
+        future: _initializeControllerFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            return Stack(
+              children: [
+                CameraPreview(_controller),
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: aspectRatio,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.red, width: 2),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          } else {
+            return const Center(child: CircularProgressIndicator());
+          }
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _capturePhoto,
+        child: const Icon(Icons.camera),
+      ),
     );
   }
 }
