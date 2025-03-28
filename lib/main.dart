@@ -203,11 +203,19 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = CameraController(
-      widget.cameras.first,
-      ResolutionPreset.high,
-    );
-    _initializeControllerFuture = _controller.initialize();
+    _initializeCamera();
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      _controller = CameraController(
+        widget.cameras.first,
+        ResolutionPreset.high,
+      );
+      _initializeControllerFuture = _controller.initialize();
+    } catch (e) {
+      print('Error initializing camera: $e');
+    }
   }
 
   @override
@@ -325,10 +333,10 @@ Future<File> _cropImage(File imageFile) async {
   }
 
   // Define the cropping area based on the card-sized frame
-  final int cropLeft = (image.width * 0.05).toInt(); // 5% padding on the left
-  final int cropTop = (image.height * 0.25).toInt(); // 25% padding on the top
   final int cropWidth = (image.width * 0.9).toInt(); // 90% of the width
   final int cropHeight = (cropWidth / (3 / 2)).toInt(); // Maintain 3:2 aspect ratio
+  final int cropLeft = ((image.width - cropWidth) / 2).toInt(); // Center horizontally
+  final int cropTop = ((image.height - cropHeight) / 2).toInt(); // Center vertically
 
   // Crop the image
   final cropped = img.copyCrop(
